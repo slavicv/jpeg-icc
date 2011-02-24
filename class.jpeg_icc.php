@@ -3,7 +3,7 @@
  * PHP JPEG ICC profile manipulator class
  *
  * @author Richard Toth aka risko (risko@risko.org)
- * @version 0.1
+ * @version 0.2
  */
 class JPEG_ICC
 {
@@ -154,6 +154,11 @@ class JPEG_ICC
 		return false;
     }
 
+	/**
+	 * Save previously loaded ICC profile into JPEG file.
+	 *
+	 * @param		string		JPEG file name
+	 */
     public function SaveToJPEG($fname)
     {
 		if ($this->icc_profile == '') throw new Exception("No profile loaded.\n");
@@ -375,6 +380,11 @@ class JPEG_ICC
 		return substr($this->icc_profile, $from, $bytes);
 	}
 
+	/**
+	 * Prepare all data needed to be inserted into JPEG file to add ICC profile.
+	 *
+	 * @return		string
+	 */
 	private function prepareJPEGProfileData()
 	{
 		$data = '';
