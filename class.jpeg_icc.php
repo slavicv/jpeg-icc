@@ -89,13 +89,13 @@ class JPEG_ICC
 					if ($this->getJPEGSegmentContainsICC($f, $pos, $size))
 					{
 						//echo "+ ICC Profile: YES\n";
-						list($chunk_no, $chunk_cnt) = $this->getJPEGSegmentICCchunkInfo($f, $pos);
+						list($chunk_no, $chunk_cnt) = $this->getJPEGSegmentICCChunkInfo($f, $pos);
 						//echo "+ ICC Profile chunk number: $chunk_no\n";
 						//echo "+ ICC Profile chunks count: $chunk_cnt\n";
 
 						if ($chunk_no <= $chunk_cnt)
 						{
-							$profile_chunks[$chunk_no] = $this->getJPEGSegmentICCchunk($f, $pos);
+							$profile_chunks[$chunk_no] = $this->getJPEGSegmentICCChunk($f, $pos);
 
 							if ($chunk_no == $chunk_cnt) // posledny kusok
 							{
@@ -156,7 +156,20 @@ class JPEG_ICC
 
     public function SaveToJPEG($fname)
     {
+		if ($this->icc_profile == '') throw new Exception("No profile loaded.\n");
 
+		if (!file_exists($fname)) throw new Exception("File $fname doesn't exist.\n");
+		if (!is_readable($fname)) throw new Exception("File $fname isn't readable.\n");
+		$dir = realpath($fname);
+		if (!is_writable($dir)) throw new Exception("Directory $fname isn't writeable.\n");
+
+		$f = file_get_contents($fname);
+		if ($this->insertProfile($f))
+		{
+			$fsize = strlen($f);
+			$ret = file_put_contents($fname, $f);
+			if ($ret === false || $ret < $fsize) throw new Exception ("Write failed.\n");
+		}
     }
 
 	/**
@@ -200,93 +213,19 @@ class JPEG_ICC
 	 */
     public function RemoveFromJPEG($input, $output, $force_overwrite = false)
     {
+		if (!file_exists($input)) throw new Exception("File $input doesn't exist.\n");
+		if (!is_readable($input)) throw new Exception("File $input isn't readable.\n");
+		$dir = realpath($output);
+		if (!is_writable($dir)) throw new Exception("Directory $output isn't writeable.\n");
+		if (!$force_overwrite && file_exists($output)) throw new Exception("File $output exists.\n");
+
 		$f = file_get_contents($input);
-		$len = strlen($f);
-		$pos = 0;
-		$counter = 0; // ehm...
-		$chunks_to_go = -1;
+		$this->removeProfile($f);
+		$fsize = strlen($f);
+		$ret = file_put_contents($output, $f);
+		if ($ret === false || $ret < $fsize) throw new Exception ("Write failed.\n");
 
-		while ($pos < $len && $counter < 100)
-		{
-			$pos = strpos($f, "\xff", $pos);
-			if ($pos === false) break; // no more 0xFF - we can end up with search
-
-			// analyze next segment
-			$type = $this->getJPEGSegmentType($f, $pos);
-
-			switch ($type)
-			{
-				case 0xe2: // APP2
-					$size = $this->getJPEGSegmentSize($f, $pos);
-			
-					if ($this->getJPEGSegmentContainsICC($f, $pos, $size))
-					{
-						list($chunk_no, $chunk_cnt) = $this->getJPEGSegmentICCchunkInfo($f, $pos);
-						if ($chunks_to_go == -1) $chunks_to_go = $chunk_cnt; // first time save chunks count
-			
-						$f = substr_replace($f, '', $pos, $size + 2); // remove this APP segment from dataset (segment size + 2B app marker)
-						$len -= $size + 2; // shorten the size
-
-						if (--$chunks_to_go == 0) // no more icc profile chunks, store file
-						{
- 							$dir = realpath($output);
-							if (!is_writable($dir)) throw new Exception("Directory $output isn't writeable.\n");
-							if (!$force_overwrite && file_exists($output)) throw new Exception("File $output exists.\n");
-
-							$ret = file_put_contents($output, $f);
-							if ($ret === false || $ret < $this->icc_size) throw new Exception ("Write failed.\n");
-							return true;
-						}
-
-						break; // go out without changing the position
-					}
-					$pos += $size + 2; // size of segment data + 2B size of segment marker
-					break;
-
-				case 0xe0: // APP0
-				case 0xe1: // APP1
-				case 0xe3: // APP3
-				case 0xe4: // APP4
-				case 0xe5: // APP5
-				case 0xe6: // APP6
-				case 0xe7: // APP7
-				case 0xe8: // APP8
-				case 0xe9: // APP9
-				case 0xea: // APP10
-				case 0xeb: // APP11
-				case 0xec: // APP12
-				case 0xed: // APP13
-				case 0xee: // APP14
-				case 0xef: // APP15
-				case 0xc0: // SOF0
-				case 0xc2: // SOF2
-				case 0xc4: // DHT
-				case 0xdb: // DQT
-				case 0xda: // SOS
-				case 0xfe: // COM
-					$size = $this->getJPEGSegmentSize($f, $pos);
-					$pos += $size + 2; // size of segment data + 2B size of segment marker
-					break;
-
-				case 0xd8: // SOI
-				case 0xdd: // DRI
-				case 0xd9: // EOI
-				case 0xd0: // RST0
-				case 0xd1: // RST1
-				case 0xd2: // RST2
-				case 0xd3: // RST3
-				case 0xd4: // RST4
-				case 0xd5: // RST5
-				case 0xd6: // RST6
-				case 0xd7: // RST7
-				default:
-					$pos += 2;
-					break;
-			}
-			$counter++;
-		}
-
-		return false;
+		return true; // any other error throws exception
     }
 
 	/**
@@ -298,7 +237,7 @@ class JPEG_ICC
     {
 		$this->icc_profile = $data;
 		$this->icc_size = strlen($data);
-		$this->countchunks();
+		$this->countChunks();
     }
 
 	/**
@@ -314,7 +253,7 @@ class JPEG_ICC
 	/**
 	 * Count in how many chunks we need to divide the profile to store it in JPEG APP2 segments
 	 */
-    private function countchunks()
+    private function countChunks()
     {
 		$this->icc_chunks = ceil($this->icc_size / ((float) (self::MAX_BYTES_IN_MARKER - self::ICC_HEADER_LEN)));
     }
@@ -398,15 +337,23 @@ class JPEG_ICC
 	 * @param		int			position of segment data
 	 * @return		array		{chunk_no, chunk_cnt}
 	 */
-	private function getJPEGSegmentICCchunkInfo(&$f, $pos)
+	private function getJPEGSegmentICCChunkInfo(&$f, $pos)
 	{
 		$a = unpack('Cchunk_no/Cchunk_count', substr($f, $pos + 16, 2)); // 16B offset to data = 2B segment marker + 2B segment size + 'ICC_PROFILE' + 0x00, 1. byte chunk number, 2. byte chunks count
 		return array_values($a);
 	}
 
-	private function getJPEGSegmentICCchunk(&$f, $pos)
+	/**
+	 * Returns chunk of ICC profile data from segment.
+	 *
+	 * @param		string		&data
+	 * @param		int			current position
+	 * @return		string
+	 */
+	private function getJPEGSegmentICCChunk(&$f, $pos)
 	{
 		$data_offset = $pos + 4 + self::ICC_HEADER_LEN; // 4B JPEG APP offset + 14B ICC header offset
+		$size = $this->getJPEGSegmentSize($f, $pos);
 		$data_size = $size - self::ICC_HEADER_LEN - 2; // 14B ICC header - 2B of size data
 		return substr($f, $data_offset, $data_size);
 	}
@@ -417,7 +364,7 @@ class JPEG_ICC
 	 * @param		int			chunk number
 	 * @return		string
 	 */
-	private function getchunk($chunk_no)
+	private function getChunk($chunk_no)
 	{
 		if ($chunk_no > $this->icc_chunks) return '';
 		
@@ -426,6 +373,194 @@ class JPEG_ICC
 		$bytes = ($chunk_no < $this->icc_chunks) ? $max_chunk_size : $this->icc_size % $max_chunk_size;
 
 		return substr($this->icc_profile, $from, $bytes);
+	}
+
+	private function prepareJPEGProfileData()
+	{
+		$data = '';
+
+		for ($i = 1; $i <= $this->icc_chunks; $i++)
+		{
+			$chunk = $this->getChunk($i);
+			$chunk_size = strlen($chunk);
+			$data .= "\xff\xe2" . pack('n', $chunk_size + 2 + self::ICC_HEADER_LEN); // APP2 segment marker + size field
+			$data .= self::ICC_MARKER . pack('CC', $i, $this->icc_chunks); // profile marker inside segment
+			$data .= $chunk;
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Removes profile from JPEG data
+	 *
+	 * @param		string		&data
+	 * @return		bool
+	 */
+	private function removeProfile(&$jpeg_data)
+	{
+		$len = strlen($jpeg_data);
+		$pos = 0;
+		$counter = 0; // ehm...
+		$chunks_to_go = -1;
+
+		while ($pos < $len && $counter < 100)
+		{
+			$pos = strpos($jpeg_data, "\xff", $pos);
+			if ($pos === false) break; // no more 0xFF - we can end up with search
+
+			// analyze next segment
+			$type = $this->getJPEGSegmentType($jpeg_data, $pos);
+
+			switch ($type)
+			{
+				case 0xe2: // APP2
+					$size = $this->getJPEGSegmentSize($jpeg_data, $pos);
+
+					if ($this->getJPEGSegmentContainsICC($jpeg_data, $pos, $size))
+					{
+						list($chunk_no, $chunk_cnt) = $this->getJPEGSegmentICCChunkInfo($jpeg_data, $pos);
+						if ($chunks_to_go == -1) $chunks_to_go = $chunk_cnt; // first time save chunks count
+
+						$jpeg_data = substr_replace($jpeg_data, '', $pos, $size + 2); // remove this APP segment from dataset (segment size + 2B app marker)
+						$len -= $size + 2; // shorten the size
+
+						if (--$chunks_to_go == 0) return true; // no more icc profile chunks, store file
+
+						break; // go out without changing the position
+					}
+					$pos += $size + 2; // size of segment data + 2B size of segment marker
+					break;
+
+				case 0xe0: // APP0
+				case 0xe1: // APP1
+				case 0xe3: // APP3
+				case 0xe4: // APP4
+				case 0xe5: // APP5
+				case 0xe6: // APP6
+				case 0xe7: // APP7
+				case 0xe8: // APP8
+				case 0xe9: // APP9
+				case 0xea: // APP10
+				case 0xeb: // APP11
+				case 0xec: // APP12
+				case 0xed: // APP13
+				case 0xee: // APP14
+				case 0xef: // APP15
+				case 0xc0: // SOF0
+				case 0xc2: // SOF2
+				case 0xc4: // DHT
+				case 0xdb: // DQT
+				case 0xda: // SOS
+				case 0xfe: // COM
+					$size = $this->getJPEGSegmentSize($jpeg_data, $pos);
+					$pos += $size + 2; // size of segment data + 2B size of segment marker
+					break;
+
+				case 0xd8: // SOI
+				case 0xdd: // DRI
+				case 0xd9: // EOI
+				case 0xd0: // RST0
+				case 0xd1: // RST1
+				case 0xd2: // RST2
+				case 0xd3: // RST3
+				case 0xd4: // RST4
+				case 0xd5: // RST5
+				case 0xd6: // RST6
+				case 0xd7: // RST7
+				default:
+					$pos += 2;
+					break;
+			}
+			$counter++;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Inserts profile to JPEG data.
+	 *
+	 * Inserts profile immediately after SOI section
+	 *
+	 * @param		string		&data
+	 * @return		bool
+	 */
+	private function insertProfile(&$jpeg_data)
+	{
+		$len = strlen($jpeg_data);
+		$pos = 0;
+		$counter = 0; // ehm...
+		$chunks_to_go = -1;
+
+		while ($pos < $len && $counter < 100)
+		{
+			$pos = strpos($jpeg_data, "\xff", $pos);
+			if ($pos === false) break; // no more 0xFF - we can end up with search
+
+			// analyze next segment
+			$type = $this->getJPEGSegmentType($jpeg_data, $pos);
+
+			switch ($type)
+			{
+				case 0xd8: // SOI
+					$pos += 2;
+					
+					$p_data = $this->prepareJPEGProfileData();
+					if ($p_data != '')
+					{
+						$before = substr($jpeg_data, 0, $pos);
+						$after = substr($jpeg_data, $pos);
+						$jpeg_data = $before . $p_data . $after;
+						return true;
+					}
+					return false;
+					//break;
+
+				case 0xe0: // APP0
+				case 0xe1: // APP1
+				case 0xe2: // APP2
+				case 0xe3: // APP3
+				case 0xe4: // APP4
+				case 0xe5: // APP5
+				case 0xe6: // APP6
+				case 0xe7: // APP7
+				case 0xe8: // APP8
+				case 0xe9: // APP9
+				case 0xea: // APP10
+				case 0xeb: // APP11
+				case 0xec: // APP12
+				case 0xed: // APP13
+				case 0xee: // APP14
+				case 0xef: // APP15
+				case 0xc0: // SOF0
+				case 0xc2: // SOF2
+				case 0xc4: // DHT
+				case 0xdb: // DQT
+				case 0xda: // SOS
+				case 0xfe: // COM
+					$size = $this->getJPEGSegmentSize($jpeg_data, $pos);
+					$pos += $size + 2; // size of segment data + 2B size of segment marker
+					break;
+
+				case 0xdd: // DRI
+				case 0xd9: // EOI
+				case 0xd0: // RST0
+				case 0xd1: // RST1
+				case 0xd2: // RST2
+				case 0xd3: // RST3
+				case 0xd4: // RST4
+				case 0xd5: // RST5
+				case 0xd6: // RST6
+				case 0xd7: // RST7
+				default:
+					$pos += 2;
+					break;
+			}
+			$counter++;
+		}
+
+		return false;
 	}
 }
 ?>
